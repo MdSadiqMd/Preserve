@@ -1,0 +1,297 @@
+defaults:
+  device: auto
+  dtype: float16
+  max_video_duration_seconds: 30.0
+  max_video_resolution: 1280
+
+inpainting:
+  default: propainter
+
+  backends:
+    propainter:
+      name: ProPainter
+      description: "Propagation-first video inpainting (ICCV 2023). Best for object removal when background is visible in other frames."
+      supports_mps: true
+      supports_cuda: true
+      min_memory_gb: 8
+      checkpoints:
+        model: ProPainter.pth
+        flow: recurrent_flow_completion.pth
+        raft: raft-things.pth
+      download_urls:
+        base: "https://github.com/sczhou/ProPainter/releases/download/v0.1.0"
+        model: "${base}/ProPainter.pth"
+        flow: "${base}/recurrent_flow_completion.pth"
+        raft: "${base}/raft-things.pth"
+      settings:
+        # Local temporal window fed to the transformer per step
+        neighbor_length: 10
+        # Spacing between long-range reference frames
+        ref_stride: 10
+        # Flow completion and propagation run in windows of this many frames
+        # Larger values give slightly better temporal coherence but allocate
+        # tensors proportional to window*H*W, which stalls MPS above ~40
+        subvideo_length: 40
+        raft_iters: 20
+        # Mask growth before flow completion / inpainting. Needs to exceed the
+        # segmentation boundary so object edges and contact shadows are covered;
+        # too tight leaves a visible silhouette of the "removed" object
+        flow_mask_dilates: 8
+        mask_dilates: 6
+
+generation:
+  default: animatediff
+
+  backends:
+    animatediff:
+      name: AnimateDiff
+      description: "Text-to-video via a motion adapter over Stable Diffusion 1.5. Shares its latent space with the inpainting model used for replacement edits."
+      base_model: stable-diffusion-v1-5/stable-diffusion-v1-5
+      motion_adapter: guoyww/animatediff-motion-adapter-v1-5-2
+      settings:
+        default_negative_prompt: "blurry, low quality, distorted, watermark, text, deformed"
+        # 16 frames at 384 keeps peak activation memory low enough to avoid
+        # swapping on unified memory; 512 with all frames in one UNet batch
+        # thrashes. Raise once generation runs on a dedicated GPU
+        num_frames: 16
+        height: 384
+        width: 384
+        fps: 8
+        guidance_scale: 7.5
+        num_inference_steps: 20
+    wan:
+      name: Wan2.2-TI2V-5B
+      description: "Text-to-video via the Wan 2.2 video DiT (5B, Apache 2.0). Same Wan family as the VACE edit path."
+      model_id: /Users/sadiq/Developer/preserve/models/wan22-ti2v-5b
+      settings:
+        default_negative_prompt: "Bright tones, overexposed, static, blurred details, subtitles, low quality, worst quality, JPEG compression residue, ugly, deformed, disfigured, still picture, messy background"
+        # 81 frames at 16fps = ~5s; snapped to 4k+1, dims to multiples of 16
+        num_frames: 81
+        height: 720
+        width: 1280
+        fps: 16
+        guidance_scale: 5.0
+        num_inference_steps: 40
+        # Sequential CPU offload keeps the 5B DiT + text encoder inside the
+        # 48GB unified budget at 720p; slicing caps the attention/VAE peak
+        enable_model_offload: true
+        enable_attention_slicing: true
+        enable_vae_slicing: true
+
+replacement:
+  default: vace
+
+  backends:
+    vace:
+      name: Wan2.1-VACE
+      description: "Video-native masked editing (Wan2.1-VACE-1.3B). One diffusion pass over the whole clip with attention spanning frames, so the replacement holds one identity instead of drifting per frame."
+      model: Wan-AI/Wan2.1-VACE-1.3B-diffusers
+      settings:
+        # UniPC flow-shift 3.0 is the documented setting for <=480p renders.
+        flow_shift: 3.0
+        num_inference_steps: 30
+        guidance_scale: 6.0
+        # Removal-specific overrides (null = inherit the shared values above)
+        # 7.5: stronger ghost. 3.5: 92.6, ghost unchanged. 6.0 wins the
+        # guidance axis. Removal seed pinned by 3-seed sweep (777: 94.6 dark
+        # ghost, 2024: 95.4 pale ghost, 55555: 94.9 black car) — the metric
+        # compresses all three, eyes rank 2024 first. n=1 per seed caveat
+        removal_guidance_scale: null
+        removal_num_inference_steps: null
+        removal_seed: 2024
+        # (12345: 87.7, 777: 94.9, 99991: 88.0 — noise dominates at ±3.6)
+        # Any fixed default is arbitrary; this one has a measured excellent
+        # render behind it. Per-clip variance remains: the color-evidence
+        # reroll and pass competition still guard other footage
+        seed: 777
+        # The negative prompt Wan 2.1 was trained against (model card); an
+        # SD-flavoured default measurably shifts its output distribution
+        negative_prompt: "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards"
+        # Fraction of the eroded edit region that must show the prompt's colour
+        # across the clip before the render is accepted; failing renders are
+        # re-rolled with a bumped seed (same policy as the SD path)
+        color_evidence_min: 0.10
+        max_rerolls: 1
+        # The generate region grows past the tracked matte by this many pixels
+        # so contact shadows and boundary pixels re-render instead of surviving
+        # as a halo of the old object. Matched to the pipeline's generative
+        # dilation (8px) so the VACE white-mask region and the composite
+        # allowed region coincide (no VAE halo ring, InVi 3.3)
+        mask_grow_px: 8
+        # Wan 1.3B is a 480p-class model: renders happen at this bound whether
+        render_dim: 480
+        # Second "Swap Anything" pass: crop best frame's object as reference image
+        # to anchor identity across frames. Adds ~100% render time but improves
+        # temporal stability by conditioning on a fixed object appearance
+        use_reference_pass: true
+        # Stronger conditioning for reference pass to make the reference image
+        # dominate the generation and anchor identity
+        reference_conditioning_scale: 2.0
+        # Memory optimizations for higher resolution
+        enable_vae_tiling: true
+        enable_attention_slicing: true
+        enable_model_offload: false
+        # Enable torch.compile for transformer and VAE (significant speedup on CUDA, disabled on MPS)
+        enable_torch_compile: false
+        # CFG Zero-Star guidance for better prompt adherence (arXiv:2412.03518)
+        use_cfg_zero_star: true
+        cfg_zero_star_alpha: 0.5
+        # Temporal consistency regularization during inference
+        use_temporal_consistency: true
+        # Prompt enhancement for better VACE results
+        use_prompt_enhancement: true
+        # xFormers memory-efficient attention (not available on MPS)
+        enable_xformers: false
+
+    sd_inpaint:
+      name: SD1.5 Inpainting
+      description: "Masked diffusion for replacing an object with something else. Used only where pixels are genuinely unknown."
+      model: stable-diffusion-v1-5/stable-diffusion-inpainting
+      settings:
+        # Strength 1.0 fully re-samples the masked region. Lower values were
+        # tried as a drift control, but 0.85 anchors so hard the model returns
+        # the original object and ignores the instruction outright (measured:
+        # hue stayed red at 0.85, yellow landed at 1.0). Identity stability now
+        # comes from the shared-seed anchors and propagation instead
+        strength: 1.0
+        guidance_scale: 8.0
+        # Every rendered frame is a separate diffusion run, so steps multiply by
+        # anchor count. 15 keeps a clip interactive on MPS
+        num_inference_steps: 15
+        # Anchor every frame to one seed so the replacement does not re-roll its
+        # identity frame to frame. Reduces, does not eliminate, flicker
+        fixed_seed: 12345
+        # Diffusion renders only every Nth edited frame; in-between frames take
+        # the flow-warped nearest anchor's patch, so the replacement moves with
+        # the scene instead of being re-sampled (the TokenFlow/DiffuEraser
+        # propagation principle at classical-compute cost). 1 restores per-frame
+        # rendering
+        anchor_stride: 4
+        # When the prompt names a colour, an anchor whose masked region shows
+        # less than this fraction of it is treated as having ignored the
+        # instruction (e.g. road where a taxi belongs) and is re-rolled, keeping
+        # the render with the most colour evidence. 0 disables the check
+        color_evidence_min: 0.05
+        # Memory optimizations
+        enable_vae_tiling: true
+        enable_attention_slicing: true
+        enable_model_offload: false
+
+grounding:
+  default: clipseg
+
+  backends:
+    clipseg:
+      name: CLIPSeg
+      description: "Text-prompted coarse segmentation for subjects outside the detector's vocabulary, or footage it scores too low to report."
+      model: CIDAS/clipseg-rd64-refined
+      settings:
+        threshold: 0.4
+        min_area_ratio: 0.002
+        batch_size: 8
+        close_px: 7
+
+segmentation:
+  default: yolo
+
+  backends:
+    yolo:
+      name: YOLO11-seg
+      description: "Instance segmentation over COCO classes. Resolves prompts like 'blue cars' to per-object masks while leaving other classes untouched."
+      weights: yolo11m-seg.pt
+      download_url: "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11m-seg.pt"
+      settings:
+        confidence: 0.25
+        iou: 0.5
+        mask_threshold: 0.5
+        # Fraction of an instance's pixels that must match the requested colour
+        color_match_ratio: 0.30
+        # Fraction of a track's frames that must match the colour for the whole
+        # track to be edited. Low, because an object is often only clearly the
+        # requested colour in some frames (shadow, blur, partial occlusion)
+        color_vote_ratio: 0.25
+        # Frames to extend a track's mask before its first / after its last
+        # detection, since objects are usually present before being detected
+        track_edge_extend: 2
+        # Temporal max-pool radius over the final matte: each frame's mask
+        # spreads to its neighbours, so flickering silhouette pixels stay
+        # covered and never flash the object at full opacity for one frame
+        temporal_pool_radius: 1
+        # Instances smaller than this fraction of frame area are ignored
+        min_area_ratio: 0.0002
+
+refinement:
+  default: sam2
+
+  backends:
+    sam2:
+      name: SAM2.1-tiny
+      description: "Grows coarse masks to the full object extent. Detectors under-cover (window lines, skirts, wheels); everything missed stays outside the edit region and survives as residue."
+      weights: sam2.1_t.pt
+      download_url: "https://github.com/ultralytics/assets/releases/download/v8.4.0/sam2.1_t.pt"
+      settings:
+        enabled: true
+        # Coarse-mask bounding box is grown this many pixels before prompting;
+        # SAM segments the whole object inside the box, so the box must reach
+        # past the detector's under-covered boundary. 14px at 384p reaches the
+        # roof/glass YOLO stops at the window line on (audit: red roof bleed)
+        box_expand_px: 14
+
+background:
+  # Recovers the region behind removed objects from frames that actually expose
+  # it, instead of letting the inpainting model hallucinate a soft patch. Frames
+  # are motion-compensated first, so aligned static background stays sharp
+  enabled: true
+  # "median" over all frames: transient objects the detector missed average out,
+  # while registered static background stays crisp. "nearest" is marginally
+  # sharper but pastes in whatever vehicle happened to be there
+  mode: median
+  window: 0            # 0 = use every frame
+  min_samples: 5
+  # A donor pixel only counts as background if no detected object covered it
+  # Dilated so object edges and contact shadows do not leak into the plate
+  occupancy_dilate_px: 12
+  # Extra protection for non-target objects, since instance masks tend to miss
+  # skirts and wheels that mask dilation would otherwise reach
+  keepout_grow_px: 8
+  # Softens the transition to the model fill where no real background exists
+  blend_feather_px: 5
+  # Donor agreement gate (0-255 mean absolute deviation across valid donors):
+  # donors warped through a locally-wrong affine disagree, so high spread
+  # marks misalignment and the pixel falls through to the diffusion fill
+  # instead of pasting a shard. Asphalt donors agree within ~10-15; car/road
+  # bimodality differs by ~100. Null disables the check (legacy behavior)
+  max_donor_spread: 28.0
+  # Local background-likeness prior (SuBSENSE principle: high local variance
+  # yields a larger threshold and vice versa). Plate pixels must resemble
+  # their LOCAL unmasked neighborhood or fall through to diffusion fill
+  local_gate_enabled: true
+  local_gate_win: 31
+  local_gate_k: 3.0
+  local_gate_floor: 12.0
+  # Exemplar coherence (Wexler et al.): each filled component must resemble
+  # some unoccluded patch (normalized cross-correlation). Components with no
+  # background twin fall through to diffusion fill. Read-only measurement
+  patch_coherence_enabled: true
+  patch_coherence_thresh: 0.45
+  # Step-4 cascade (DiffuEraser): unknown-only pixels are re-rendered by video
+  # diffusion conditioned on the plate surroundings. Opt-in: measured 0/30
+  # remaining tracks on a 1s park-traffic window (2026-09-04), but costs a
+  # full diffusion render and is single-shot capped at ~81 frames, so the
+  # default stays off until windowed rendering lands
+  # Runs only when the unknown share reaches refine_min_unknown_ratio.
+  # Fail-soft: diffusion errors keep the fallback
+  refine_unknown_with_vace: false
+  refine_min_unknown_ratio: 0.05
+pipeline:
+  context_frames: 8
+  default_dilation_px: 5
+  default_feather_px: 3
+  # Frames above this are sampled with a stride, which halves output frame rate
+  # and starves background reconstruction of donor frames. Keep it above the
+  # frame count of typical clips so short videos process every frame
+  max_frames: 300
+  processing_width: 960
+  verification:
+    tolerance: 0
+    strict_mode: true
