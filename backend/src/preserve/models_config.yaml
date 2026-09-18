@@ -40,7 +40,7 @@ inpainting:
         mask_dilates: 6
 
 generation:
-  default: animatediff
+  default: wan
 
   backends:
     animatediff:
@@ -73,10 +73,11 @@ generation:
         guidance_scale: 5.0
         num_inference_steps: 40
         # Sequential CPU offload keeps the 5B DiT + text encoder inside the
-        # 48GB unified budget at 720p; slicing caps the attention/VAE peak
+        # 48GB unified budget at 720p; slicing caps the attention peak.
+        # VAE slicing stays off: AutoencoderKLWan does not implement it.
         enable_model_offload: true
         enable_attention_slicing: true
-        enable_vae_slicing: true
+        enable_vae_slicing: false
 
 replacement:
   default: vace
