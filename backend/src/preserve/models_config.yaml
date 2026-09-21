@@ -5,9 +5,29 @@ defaults:
   max_video_resolution: 1280
 
 inpainting:
-  default: propainter
+  default: minimax
 
   backends:
+    minimax:
+      name: MiniMax-Remover
+      description: "Purpose-trained video object remover (NeurIPS 2025, Wan-1.3B-class DiT, no text, no CFG). Fills the masked region with background instead of regenerating the object, which is the ghost failure VACE removal showed on every audit."
+      supports_mps: true
+      model_dir: minimax-remover
+      hf_repo: zibojia/minimax-remover
+      settings:
+        # Paper: 6 steps suffice; repo default 12. No CFG, so steps are cheap
+        num_inference_steps: 12
+        # Extra growth of the generation mask beyond the region the pipeline
+        # hands over. 0: the pipeline's removal dilation (8px) already grows
+        # the matte, and any pixel the model repaints outside the allowed
+        # region is hard-restored, which left a faint tone seam where the
+        # repo-default growth of 6 exceeded the composite (audit 2026-09-19)
+        mask_dilate_iterations: 0
+        seed: 42
+        transformer_dtype: float16
+        # Trained/tested at 480x832; larger inputs are downscaled for the render
+        render_dim: 480
+        enable_vae_tiling: true
     propainter:
       name: ProPainter
       description: "Propagation-first video inpainting (ICCV 2023). Best for object removal when background is visible in other frames."
@@ -65,19 +85,25 @@ generation:
       model_id: /Users/sadiq/Developer/preserve/models/wan22-ti2v-5b
       settings:
         default_negative_prompt: "Bright tones, overexposed, static, blurred details, subtitles, low quality, worst quality, JPEG compression residue, ugly, deformed, disfigured, still picture, messy background"
-        # 81 frames at 16fps = ~5s; snapped to 4k+1, dims to multiples of 16
+        # TI2V-5B is tuned for 720p@24fps only (model card: 480p unsupported;
+        # audit 2026-09-19: 480p renders came out blotchy and posterised).
+        # Frame count snaps to 4k+1, dims to multiples of 32 (720 -> 704).
         num_frames: 81
-        height: 720
+        height: 704
         width: 1280
-        fps: 16
+        fps: 24
         guidance_scale: 5.0
+        # Model card recipe is 50; 40 is the time/quality compromise on MPS
         num_inference_steps: 40
-        # Sequential CPU offload keeps the 5B DiT + text encoder inside the
-        # 48GB unified budget at 720p; slicing caps the attention peak.
-        # VAE slicing stays off: AutoencoderKLWan does not implement it.
-        enable_model_offload: true
-        enable_attention_slicing: true
-        enable_vae_slicing: false
+        # UniPC update stepped on the CPU (see preserve.mps)
+        scheduler_on_cpu: true
+        # No CPU offload: the accelerate offload hooks leak MPS memory every
+        # transformer block (measured 2026-09-19: +1.7GB/block, SIGKILL at 58GB
+        # in the first 720p step), while the whole 5B stack resident on MPS is a
+        # flat 24GB. Attention slicing is a no-op on the Wan transformer.
+        enable_model_offload: false
+        enable_attention_slicing: false
+        enable_vae_tiling: true
 
 replacement:
   default: vace
@@ -91,6 +117,9 @@ replacement:
         # UniPC flow-shift 3.0 is the documented setting for <=480p renders.
         flow_shift: 3.0
         num_inference_steps: 30
+        # With keyframe anchors (reveal/replace) the pass is interpolation;
+        # 20 steps measured equal to 30 on the cap clip and saves ~1/3 time
+        anchored_num_inference_steps: 20
         guidance_scale: 6.0
         # Removal-specific overrides (null = inherit the shared values above)
         # 7.5: stronger ghost. 3.5: 92.6, ghost unchanged. 6.0 wins the
@@ -144,6 +173,20 @@ replacement:
         # xFormers memory-efficient attention (not available on MPS)
         enable_xformers: false
 
+    lucy:
+      name: Lucy-Edit-1.1
+      description: "Instruction video editor on Wan2.2-5B (Decart). Understands 'remove his cap' semantically (hair under a cap, a mouth under a straw) and keeps motion/identity; the composite still only accepts pixels inside the authorized region."
+      base_model: /Users/sadiq/Developer/preserve/models/wan22-ti2v-5b
+      model_dir: lucy-edit-1.1
+      weights: lucy-edit-1.1-dev-cui-fp16.safetensors
+      settings:
+        num_inference_steps: 30
+        guidance_scale: 5.0
+        seed: 42
+        # Demonstrated at 480x832; 720p is possible but ~4x slower on MPS
+        render_dim: 832
+        negative_prompt: "Bright tones, overexposed, static, blurred details, subtitles, low quality, worst quality, JPEG compression residue, ugly, deformed, disfigured, still picture, messy background"
+
     sd_inpaint:
       name: SD1.5 Inpainting
       description: "Masked diffusion for replacing an object with something else. Used only where pixels are genuinely unknown."
@@ -177,6 +220,38 @@ replacement:
         enable_vae_tiling: true
         enable_attention_slicing: true
         enable_model_offload: false
+
+keyframe:
+  # Amodal completion of the wearer's surface on ONE frame by an image editor,
+  # then VACE propagates it with that frame anchored (mask 0). Video models
+  # here cannot invent hair under a cap or eyes behind glasses on their own
+  # (audit 2026-09-20: VACE smear, Lucy structure-locked, MiniMax paints
+  # background); image editors can, and the anchor turns the video pass into
+  # propagation instead of invention.
+  enabled: true
+  # Also anchor the first and last frames with the middle keyframe's fill
+  # warped along source flow (VACE 1.3B blotches ~16 frames from one anchor)
+  end_anchors: true
+  # An end frame whose flow-carried fill covers less of its region than this
+  # gets its own image edit instead (fast motion, a turn)
+  min_carried_ratio: 0.6
+  default: klein
+  backends:
+    sd_inpaint:
+      name: SD1.5 Inpainting (keyframe)
+      model: stable-diffusion-v1-5/stable-diffusion-inpainting
+      settings:
+        render_dim: 512
+        num_inference_steps: 30
+        guidance_scale: 7.5
+        seed: 7
+    klein:
+      name: FLUX.2 klein 4B
+      model_dir: flux2-klein-4b
+      settings:
+        num_inference_steps: 4
+        guidance_scale: 1.0
+        seed: 7
 
 grounding:
   default: clipseg
@@ -257,6 +332,19 @@ background:
   keepout_grow_px: 8
   # Softens the transition to the model fill where no real background exists
   blend_feather_px: 5
+  # Fraction of the ring around the target that lies on another detected
+  # object, above which the target counts as attached (cap on a head) and the
+  # plate stands down: what it hides is that object's surface, never observed
+  attached_max_ring_ratio: 0.5
+  # A known wearable (cap, hat, glasses, logo...) is attached on this much
+  # contact: a brimmed hat's ring is mostly background
+  wearable_min_ring_ratio: 0.15
+  # Attached targets go to the prompted reveal fill (replacement backend with
+  # task "reveal"); false sends them through the removal backend instead (A/B)
+  attached_reveal: true
+  # A hand holding a removed handheld target joins the edit (it otherwise
+  # keeps gripping nothing); the fill is told to lower/hide it
+  interaction_removal: true
   # Donor agreement gate (0-255 mean absolute deviation across valid donors):
   # donors warped through a locally-wrong affine disagree, so high spread
   # marks misalignment and the pixel falls through to the diffusion fill
