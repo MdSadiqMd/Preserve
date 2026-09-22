@@ -1,17 +1,71 @@
 [project]
-name = "backend"
+name = "preserve-backend"
 version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
-authors = [
-    { name = "Md.Sadiq", email = "mohammadsadiq4950@gmail.com" }
+description = "Localized AI video editing backend with preservation guarantees"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "python-multipart>=0.0.18",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.6.0",
+    "numpy>=2.0.0",
+    "opencv-python-headless>=4.10.0",
+    "pillow>=11.0.0",
+    "torch>=2.5.0",
+    "torchvision>=0.20.0",
+    "diffusers>=0.32.0",
+    "transformers>=4.47.0",
+    "accelerate>=1.2.0",
+    "safetensors>=0.4.0",
+    "imageio>=2.36.0",
+    "imageio-ffmpeg>=0.5.0",
+    "av>=14.0.0",
+    "aiofiles>=24.1.0",
+    "httpx>=0.28.0",
+    "orjson>=3.10.0",
+    "structlog>=24.4.0",
+    "einops>=0.8.0",
+    "scipy>=1.14.0",
+    "pyyaml>=6.0.0",
+    "ultralytics>=8.4.117",
+    "lap>=0.5.12",
+    "ftfy>=6.3.1",
+    "mps-flash-attn>=0.6.3",
 ]
-requires-python = ">=3.13"
-dependencies = []
 
-[project.scripts]
-backend = "backend:main"
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.8.0",
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+]
+propainter = [
+    "scipy>=1.14.0",
+]
 
 [build-system]
-requires = ["uv_build>=0.12.8,<0.13.0"]
-build-backend = "uv_build"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+# Vendored upstream model code (RAFT, ProPainter): third-party snapshots we
+# must not reformat. Lint only first-party code.
+extend-exclude = [
+    "src/preserve/raft/**",
+    "src/preserve/propainter_core/**",
+    "src/preserve/propainter_model/**",
+    "src/preserve/inpaint/minimax_transformer.py",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/preserve"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

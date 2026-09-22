@@ -235,6 +235,10 @@ keyframe:
   # An end frame whose flow-carried fill covers less of its region than this
   # gets its own image edit instead (fast motion, a turn)
   min_carried_ratio: 0.6
+  # Quilt the ring's fine texture onto an erased flat-surface fill. Off:
+  # measured on the logo clip it added a warm mottle that read worse than
+  # the flat fill it was meant to improve (logo-v24/v27)
+  texture_quilt: false
   default: klein
   backends:
     sd_inpaint:
