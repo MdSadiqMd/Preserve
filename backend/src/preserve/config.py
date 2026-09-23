@@ -30,7 +30,12 @@ class Settings(BaseSettings):
     device: Literal["auto", "mps", "cuda", "cpu"] = "auto"
     dtype: Literal["float32", "float16", "bfloat16"] = "float16"
 
-    inpaint_backend: str = "propainter"
+    # models_config.yaml owns the default; PRESERVE_INPAINT_BACKEND still overrides
+    inpaint_backend: str = Field(
+        default_factory=lambda: (
+            _load_models_config().get("inpainting", {}).get("default", "propainter")
+        )
+    )
     segmentation_backend: str = "yolo"
 
     max_video_duration_seconds: float = 30.0
@@ -98,6 +103,13 @@ class Settings(BaseSettings):
     def get_replacement_default(self) -> str:
         models_config = _load_models_config()
         return models_config.get("replacement", {}).get("default", "sd_inpaint")
+
+    def get_keyframe_config(self) -> dict[str, Any]:
+        """Keyframe editor section (image model that proposes the anchor frame)."""
+        models_config = _load_models_config()
+        section = models_config.get("keyframe", {})
+        backend = section.get("backends", {}).get(section.get("default", ""), {})
+        return {**section, "backend": backend}
 
     def get_refinement_config(self, backend_name: str | None = None) -> dict[str, Any]:
         models_config = _load_models_config()

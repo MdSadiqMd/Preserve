@@ -105,15 +105,28 @@ class VideoMetadata(BaseModel):
     generation: dict[str, Any] | None = None
 
 
+def _generation_default(key: str, fallback):
+    from preserve.config import settings
+
+    return lambda: settings.get_generation_config().get("settings", {}).get(key, fallback)
+
+
 class GenerateRequest(BaseModel):
+    # Defaults come from the configured generator: the SD-era literals (7.5
+    # guidance, 384px, 16 frames) silently overrode Wan's documented recipe
+    # (audit 2026-09-19: oversaturated, blown-out renders at guidance 7.5).
     prompt: str = Field(min_length=1)
     negative_prompt: str | None = None
-    num_frames: int = Field(default=16, ge=8, le=128)
-    fps: int = Field(default=8, ge=4, le=30)
-    height: int = Field(default=384, ge=256, le=1280)
-    width: int = Field(default=384, ge=256, le=1280)
-    guidance_scale: float = Field(default=7.5, ge=1.0, le=20.0)
-    num_inference_steps: int = Field(default=20, ge=8, le=60)
+    num_frames: int = Field(default_factory=_generation_default("num_frames", 16), ge=8, le=128)
+    fps: int = Field(default_factory=_generation_default("fps", 8), ge=4, le=30)
+    height: int = Field(default_factory=_generation_default("height", 384), ge=256, le=1280)
+    width: int = Field(default_factory=_generation_default("width", 384), ge=256, le=1280)
+    guidance_scale: float = Field(
+        default_factory=_generation_default("guidance_scale", 7.5), ge=1.0, le=20.0
+    )
+    num_inference_steps: int = Field(
+        default_factory=_generation_default("num_inference_steps", 20), ge=8, le=60
+    )
     seed: int | None = None
 
 
