@@ -16,9 +16,8 @@
   "chosenAddOns": [
     "biome",
     "cloudflare",
-    "mcp",
-    "shadcn",
     "t3env",
+    "shadcn",
     "tanstack-query"
   ]
 }

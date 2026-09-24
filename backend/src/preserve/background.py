@@ -553,6 +553,43 @@ def gate_by_patch_coherence(
     return available & (~region | (region & keep))
 
 
+def attachment_ratio(
+    edit_mask: NDArray[np.uint8], occluders: NDArray[np.bool_], ring_px: int = 8
+) -> float:
+    """Fraction of the ring just outside the edit region that lies on a detected object.
+
+    Near 0: the target stands on background (a car on a road), so pixels hidden
+    behind it may be visible in other frames and the plate applies. Near 1: the
+    target is attached to another object (a cap on a head, a logo on a shirt);
+    what it hides is that object's surface, which no other frame reveals, so
+    temporal donors are wrong by construction and only a generative fill can
+    say what belongs there.
+    """
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ring_px * 2 + 1, ring_px * 2 + 1))
+    ring_total = 0
+    ring_on_object = 0
+    for mask, occ in zip(edit_mask, occluders, strict=True):
+        region = mask > 0
+        if not region.any():
+            continue
+        ring = (cv2.dilate(region.astype(np.uint8), kernel) > 0) & ~region
+        ring_total += int(ring.sum())
+        ring_on_object += int((ring & occ).sum())
+    return ring_on_object / max(1, ring_total)
+
+
+def attachment_parent(
+    edit_mask: NDArray[np.uint8], per_class: dict[str, NDArray[np.bool_]], ring_px: int = 8
+) -> str | None:
+    """Name of the detected class covering most of the ring around the target."""
+    best, best_ratio = None, 0.0
+    for name, occ in per_class.items():
+        ratio = attachment_ratio(edit_mask, occ, ring_px)
+        if ratio > best_ratio:
+            best, best_ratio = name, ratio
+    return best
+
+
 def blend_fills(
     plate: NDArray[np.uint8],
     fallback: NDArray[np.uint8],
@@ -575,7 +612,12 @@ def blend_fills(
         weight = cv2.GaussianBlur(weight, (kernel, kernel), 0)
 
     weight = weight[..., None]
-    blended = weight * plate.astype(np.float32) + (1.0 - weight) * fallback.astype(np.float32)
+    # Feathered weights reach pixels the plate never sampled; those must
+    # blend fallback with fallback, not with the plate's empty (black)
+    # canvas, which drew a dark outline along every unsampled rim
+    # (audit 2026-09-21: dark band around a removed cap).
+    sampled = np.where(available[..., None], plate, fallback).astype(np.float32)
+    blended = weight * sampled + (1.0 - weight) * fallback.astype(np.float32)
     return np.clip(blended, 0, 255).astype(np.uint8)
 
 
