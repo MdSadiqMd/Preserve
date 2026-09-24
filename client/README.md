@@ -55,15 +55,6 @@ For production env vars, run `wrangler secret put MY_VAR` for each secret listed
 KV, D1, R2, and Durable Object bindings are configured in `wrangler.jsonc` — see https://developers.cloudflare.com/workers/wrangler/configuration/.
 
 
-## Shadcn
-
-Add components using the latest version of [Shadcn](https://ui.shadcn.com/).
-
-```bash
-pnpm dlx shadcn@latest add button
-```
-
-
 ## T3Env
 
 - You can use T3Env to add type safety to your environment variables.
@@ -80,6 +71,15 @@ console.log(env.VITE_APP_TITLE);
 
 
 
+
+
+## Shadcn
+
+Add components using the latest version of [Shadcn](https://ui.shadcn.com/).
+
+```bash
+pnpm dlx shadcn@latest add button
+```
 
 
 
