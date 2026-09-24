@@ -216,3 +216,31 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Node
+node_modules/
+.pnpm-store/
+
+# Build outputs
+.vinxi/
+.output/
+.nitro/
+
+# Data and models (weights and generated artefacts are never committed; the
+# 32GB Wan checkpoint under models/ made every git snapshot hash it and time out)
+backend/data/
+backend/models/
+models/
+data/
+*.safetensors
+*.pth
+*.pt
+*.npy
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.webm
+
+# macOS
+.DS_Store
